@@ -1,7 +1,25 @@
-//! # eg-fontdue - TTF/OTF Renderer for embedded-graphics
+//! # eg-fontdue - A TTF/OTF renderer for `embedded_graphics`
 //!
-//! This crate requires `alloc`
-
+//! `eg-fontdue` implements `embedded_graphics`'s [`TextRenderer`](https://docs.rs/embedded-graphics/latest/embedded_graphics/text/renderer/trait.TextRenderer.html) and [`CharacterStyle`](https://docs.rs/embedded-graphics/latest/embedded_graphics/text/renderer/trait.CharacterStyle.html) traits over the [`fontdue`](https://github.com/mooman222/fontdue) crate. Allowing for the rendering of arbitrary TTF/OTF fonts at any size.
+//!
+//! Basic anti-aliasing is implemented, the anti-aliasing engine automatically chooses the inverse of the text color as the background color, if you do not want this, specify an anti-aliasing color with `FontdueTextStyle::with_aa_color`.
+//!
+//! Since glyphs have to be manually rasterized, rendering times may vary, `alloc` is also required
+//!
+//! ```rust
+//! use embedded_graphics::{pixelcolor::BinaryColor, text::Text};
+//!
+//! // Load a font using `fontdue`
+//! let ttf_font_data = include_bytes!("assets/font.ttf");
+//! let font = fontdue::Font::from_bytes(ttf_font_data, fontdue::FontSettings::default())?;
+//!
+//! // Specify color and location
+//! let style = eg_fontdue::FontdueTextStyle::new(&font, BinaryColor::Off, 40);
+//! let rendered_text = Text::new("Hello!", Point::new(101, 100), style);
+//!
+//! // Render
+//! rendered_text.draw(display)?;
+//! ```
 #![no_std]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
@@ -16,7 +34,7 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 use embedded_graphics::{
-    pixelcolor::Gray8,
+    pixelcolor::{Gray8, Rgb888},
     prelude::*,
     primitives::Rectangle,
     text::{
@@ -38,13 +56,42 @@ pub enum VerticalAlign {
     Middle,
 }
 
+fn alpha_composite(background: Rgb888, foreground: Rgb888, alpha: u8) -> Rgb888 {
+    let (r1, g1, b1) = (
+        foreground.r() as u16,
+        foreground.g() as u16,
+        foreground.b() as u16,
+    );
+    let (r2, g2, b2) = (
+        background.r() as u16,
+        background.g() as u16,
+        background.b() as u16,
+    );
+
+    let alpha = alpha as u16;
+    let p = 255 - alpha;
+
+    Rgb888::new(
+        ((r1 * alpha + r2 * p) / 255) as u8,
+        ((g1 * alpha + g2 * p) / 255) as u8,
+        ((b1 * alpha + b2 * p) / 255) as u8,
+    )
+}
+
+fn inverse(col: Rgb888) -> Rgb888 {
+    let (r, g, b) = (col.r(), col.g(), col.b());
+    Rgb888::new(Rgb888::MAX_R - r, Rgb888::MAX_G - g, Rgb888::MAX_B - b)
+}
+
 /// A text renderer for TTF and OTF fonts
 #[derive(Debug, Clone, Copy)]
-pub struct FontdueTextStyle<'a, C: PixelColor + From<Gray8>> {
+pub struct FontdueTextStyle<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> {
     /// A SFNT font
     pub font: &'a fontdue::Font,
     /// The color the text will be rendered in
     pub color: C,
+    /// The color the font anti-aliases towards
+    pub antialias_color: C,
     /// Size in pixels
     pub size: u16,
     /// Maximum Width
@@ -63,7 +110,7 @@ pub struct FontdueTextStyle<'a, C: PixelColor + From<Gray8>> {
     pub wrap_hard_breaks: bool,
 }
 
-impl<'a, C: PixelColor + From<Gray8>> FontdueTextStyle<'a, C> {
+impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> FontdueTextStyle<'a, C> {
     fn ascent(&self) -> u16 {
         self.font
             .horizontal_line_metrics(self.size as f32)
@@ -88,12 +135,16 @@ impl<'a, C: PixelColor + From<Gray8>> FontdueTextStyle<'a, C> {
     }
 }
 
-impl<'a, C: PixelColor + From<Gray8>> FontdueTextStyle<'a, C> {
+impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> FontdueTextStyle<'a, C>
+where
+    Rgb888: From<C>,
+{
     /// Constructs a new text style
     pub fn new(font: &'a fontdue::Font, color: C, size: u16) -> Self {
         Self {
             font,
             color,
+            antialias_color: inverse(Rgb888::from(color)).into(),
             size,
             max_width: None,
             max_height: None,
@@ -104,6 +155,24 @@ impl<'a, C: PixelColor + From<Gray8>> FontdueTextStyle<'a, C> {
             wrap_hard_breaks: true,
         }
     }
+
+    /// Constructs a new text style with an antialiasing color
+    pub fn with_aa_color(font: &'a fontdue::Font, color: C, aa_color: C, size: u16) -> Self {
+        Self {
+            font,
+            color,
+            antialias_color: aa_color,
+            size,
+            max_width: None,
+            max_height: None,
+            horiz_align: Alignment::Left,
+            vert_align_not_center: VerticalAlign::Top,
+            line_height: 1.0 * size as f32,
+            word_wrap: true,
+            wrap_hard_breaks: true,
+        }
+    }
+
     /// Renders a glyph at a certain location
     pub fn render_glyph_at<D: DrawTarget<Color = C>>(
         &self,
@@ -127,11 +196,17 @@ impl<'a, C: PixelColor + From<Gray8>> FontdueTextStyle<'a, C> {
 
         let mut data_iter = d.iter();
 
-        // TODO: HINTING
+        let c8: Rgb888 = self.color.into();
+        let bc8: Rgb888 = self.antialias_color.into();
+
         bbx.points()
             .filter_map(|p| {
                 let l = *(data_iter.next()?);
-                Some(Pixel(p, C::from(Gray8::new(l))))
+                if l != 0 {
+                    Some(Pixel(p, alpha_composite(bc8, c8, l).into()))
+                } else {
+                    None
+                }
             })
             .draw(target)?;
 
@@ -172,7 +247,9 @@ impl<'a, C: PixelColor + From<Gray8>> FontdueTextStyle<'a, C> {
     }
 }
 
-impl<'a, C: PixelColor + From<Gray8>> CharacterStyle for FontdueTextStyle<'a, C> {
+impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> CharacterStyle
+    for FontdueTextStyle<'a, C>
+{
     type Color = C;
 
     fn set_text_color(&mut self, text_color: Option<C>) {
@@ -185,7 +262,11 @@ impl<'a, C: PixelColor + From<Gray8>> CharacterStyle for FontdueTextStyle<'a, C>
     // TODO: implement additional methods
 }
 
-impl<'a, C: PixelColor + From<Gray8>> TextRenderer for FontdueTextStyle<'a, C> {
+impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> TextRenderer
+    for FontdueTextStyle<'a, C>
+where
+    Rgb888: From<C>,
+{
     type Color = C;
 
     fn draw_string<D>(
@@ -196,6 +277,7 @@ impl<'a, C: PixelColor + From<Gray8>> TextRenderer for FontdueTextStyle<'a, C> {
         target: &mut D,
     ) -> Result<Point, D::Error>
     where
+        Rgb888: From<C>,
         D: DrawTarget<Color = Self::Color>,
     {
         let mut position = position + Point::new(0, self.baseline_offset(baseline));
@@ -221,6 +303,7 @@ impl<'a, C: PixelColor + From<Gray8>> TextRenderer for FontdueTextStyle<'a, C> {
         _: &mut D,
     ) -> Result<Point, D::Error>
     where
+        Rgb888: From<C>,
         D: DrawTarget<Color = Self::Color>,
     {
         let position = position + Point::new(0, self.baseline_offset(baseline));

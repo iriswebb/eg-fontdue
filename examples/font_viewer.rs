@@ -58,8 +58,11 @@ fn draw<S: TextRenderer<Color = Rgb888> + Copy>(
         .draw(display)
         .unwrap();
 
+    use std::time::Instant;
+    let now = Instant::now();
     let text = Text::new(&string, position, style);
     draw_text(display, &text);
+    eprintln!("Rendered Main Text in {:?}", now.elapsed());
 
     let position = display.bounding_box().anchor_point(AnchorPoint::BottomLeft)
         + Point::new(5, -(line_height as i32) * 3 / 2);
@@ -121,7 +124,7 @@ fn try_main() -> Result<()> {
     file.read_to_end(&mut data)?;
     let fdfont =
         fontdue::Font::from_bytes(data.as_ref(), fontdue::FontSettings::default()).unwrap();
-    let style = FontdueTextStyle::new(&fdfont, Rgb888::WHITE, size);
+    let style = FontdueTextStyle::new(&fdfont, Rgb888::BLUE, size);
 
     let hints_style = MonoTextStyle::new(&FONT_6X10, Rgb888::CSS_DIM_GRAY);
     let bottom_right = TextStyleBuilder::new()
