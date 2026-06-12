@@ -1,0 +1,18 @@
+[package]
+name = "eg-fontdue"
+description = "TTF/OTF text renderer for embedded-graphics"
+version = "0.1.0"
+authors = ["Iris Webb <oliverwebb8192@gmail.com>"]
+edition = "2021"
+repository = "https://github.com/iriswebb/eg-fontdue"
+license = "MIT OR Apache-2.0"
+categories = ["embedded", "no-std"]
+keywords = ["embedded-graphics", "font"]
+
+[dependencies]
+embedded-graphics = "0.8.1"
+fontdue = "0.9.3"
+
+[dev-dependencies]
+embedded-graphics-simulator = "0.8.0"
+anyhow = "1.0.102"

@@ -1,0 +1,259 @@
+//! # eg-fontdue - TTF/OTF Renderer for embedded-graphics
+//!
+//! This crate requires `alloc`
+
+#![no_std]
+#![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
+#![warn(missing_copy_implementations)]
+#![warn(trivial_casts)]
+#![warn(trivial_numeric_casts)]
+#![deny(unsafe_code)]
+#![deny(unstable_features)]
+#![warn(unused_import_braces)]
+#![warn(unused_qualifications)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(rustdoc::private_intra_doc_links)]
+
+use embedded_graphics::{
+    pixelcolor::Gray8,
+    prelude::*,
+    primitives::Rectangle,
+    text::{
+        renderer::{CharacterStyle, TextMetrics, TextRenderer},
+        Alignment, Baseline,
+    },
+};
+use fontdue::layout::{Layout, TextStyle, WrapStyle};
+
+/// Text vertical alignment
+#[derive(Debug, Clone, Copy, Default)]
+pub enum VerticalAlign {
+    #[default]
+    /// Aligns to top of max height
+    Top,
+    /// Aligns to bottom of max height
+    Bottom,
+    /// Aligns to middle of max height
+    Middle,
+}
+
+/// A text renderer for TTF and OTF fonts
+#[derive(Debug, Clone, Copy)]
+pub struct FontdueTextStyle<'a, C: PixelColor + From<Gray8>> {
+    /// A SFNT font
+    pub font: &'a fontdue::Font,
+    /// The color the text will be rendered in
+    pub color: C,
+    /// Size in pixels
+    pub size: u16,
+    /// Maximum Width
+    pub max_width: Option<f32>,
+    /// Maximum Height
+    pub max_height: Option<f32>,
+    /// Horizontal Alignment
+    pub horiz_align: Alignment,
+    /// Vertical Alignment
+    pub vert_align_not_center: VerticalAlign,
+    /// Line Height
+    pub line_height: f32,
+    /// Wraps words (if false, wraps letters)
+    pub word_wrap: bool,
+    /// Wrap hard breaks
+    pub wrap_hard_breaks: bool,
+}
+
+impl<'a, C: PixelColor + From<Gray8>> FontdueTextStyle<'a, C> {
+    fn ascent(&self) -> u16 {
+        self.font
+            .horizontal_line_metrics(self.size as f32)
+            .unwrap()
+            .ascent as u16
+    }
+
+    fn descent(&self) -> u16 {
+        self.font
+            .horizontal_line_metrics(self.size as f32)
+            .unwrap()
+            .descent as u16
+    }
+
+    fn baseline_offset(&self, baseline: Baseline) -> i32 {
+        match baseline {
+            Baseline::Top => self.ascent().saturating_sub(1) as i32,
+            Baseline::Bottom => -(self.descent() as i32),
+            Baseline::Middle => (self.ascent() as i32 - self.descent() as i32) / 2,
+            Baseline::Alphabetic => 0,
+        }
+    }
+}
+
+impl<'a, C: PixelColor + From<Gray8>> FontdueTextStyle<'a, C> {
+    /// Constructs a new text style
+    pub fn new(font: &'a fontdue::Font, color: C, size: u16) -> Self {
+        Self {
+            font,
+            color,
+            size,
+            max_width: None,
+            max_height: None,
+            horiz_align: Alignment::Left,
+            vert_align_not_center: VerticalAlign::Top,
+            line_height: 1.0 * size as f32,
+            word_wrap: true,
+            wrap_hard_breaks: true,
+        }
+    }
+    /// Renders a glyph at a certain location
+    pub fn render_glyph_at<D: DrawTarget<Color = C>>(
+        &self,
+        idx: u16,
+        x: f32,
+        y: f32,
+        target: &mut D,
+    ) -> Result<Point, D::Error> {
+        let (m, d) = self.font.rasterize_indexed(idx, self.size as f32);
+
+        let bbx = Rectangle::new(
+            Point {
+                x: x as i32,
+                y: y as i32,
+            },
+            Size {
+                width: m.width as u32,
+                height: m.height as u32,
+            },
+        );
+
+        let mut data_iter = d.iter();
+
+        // TODO: HINTING
+        bbx.points()
+            .filter_map(|p| {
+                let l = *(data_iter.next()?);
+                Some(Pixel(p, C::from(Gray8::new(l))))
+            })
+            .draw(target)?;
+
+        Ok(Point::new(m.advance_width as i32, m.advance_height as i32))
+    }
+
+    /// Generates a font layout from the text style
+    pub fn generate_layout(&self, text: &str, position: Point) -> Layout {
+        let mut layout = Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
+        let settings = fontdue::layout::LayoutSettings {
+            x: position.x as f32,
+            y: position.y as f32,
+            line_height: self.line_height,
+            max_height: self.max_height,
+            max_width: self.max_width,
+            wrap_style: match self.word_wrap {
+                true => WrapStyle::Word,
+                false => WrapStyle::Letter,
+            },
+            wrap_hard_breaks: self.wrap_hard_breaks,
+            horizontal_align: match self.horiz_align {
+                Alignment::Center => fontdue::layout::HorizontalAlign::Center,
+                Alignment::Left => fontdue::layout::HorizontalAlign::Left,
+                Alignment::Right => fontdue::layout::HorizontalAlign::Right,
+            },
+            vertical_align: match self.vert_align_not_center {
+                VerticalAlign::Middle => fontdue::layout::VerticalAlign::Middle,
+                VerticalAlign::Top => fontdue::layout::VerticalAlign::Top,
+                VerticalAlign::Bottom => fontdue::layout::VerticalAlign::Bottom,
+            },
+        };
+
+        layout.reset(&settings);
+
+        layout.append(&[self.font], &TextStyle::new(text, self.size as f32, 0));
+
+        layout
+    }
+}
+
+impl<'a, C: PixelColor + From<Gray8>> CharacterStyle for FontdueTextStyle<'a, C> {
+    type Color = C;
+
+    fn set_text_color(&mut self, text_color: Option<C>) {
+        // TODO: support transparent text
+        if let Some(color) = text_color {
+            self.color = color;
+        }
+    }
+
+    // TODO: implement additional methods
+}
+
+impl<'a, C: PixelColor + From<Gray8>> TextRenderer for FontdueTextStyle<'a, C> {
+    type Color = C;
+
+    fn draw_string<D>(
+        &self,
+        text: &str,
+        position: Point,
+        baseline: Baseline,
+        target: &mut D,
+    ) -> Result<Point, D::Error>
+    where
+        D: DrawTarget<Color = Self::Color>,
+    {
+        let mut position = position + Point::new(0, self.baseline_offset(baseline));
+        let layout = self.generate_layout(text, position);
+
+        for glyph in layout.glyphs() {
+            position += self.render_glyph_at(
+                glyph.key.glyph_index,
+                glyph.x,
+                glyph.y - (self.baseline_offset(Baseline::Middle) as f32 * 2.0),
+                target,
+            )?;
+        }
+
+        Ok(position)
+    }
+
+    fn draw_whitespace<D>(
+        &self,
+        width: u32,
+        position: Point,
+        baseline: Baseline,
+        _: &mut D,
+    ) -> Result<Point, D::Error>
+    where
+        D: DrawTarget<Color = Self::Color>,
+    {
+        let position = position + Point::new(0, self.baseline_offset(baseline));
+
+        Ok(position + Size::new(width, 0))
+    }
+
+    fn measure_string(&self, text: &str, position: Point, baseline: Baseline) -> TextMetrics {
+        let position = position + Point::new(0, self.baseline_offset(baseline));
+        let layout = self.generate_layout(text, position);
+
+        let mut dx = 0.0;
+        let mut dy = 0.0;
+        for met in layout.glyphs().iter().map(|g| {
+            self.font
+                .metrics_indexed(g.key.glyph_index, self.size as f32)
+        }) {
+            dy += met.advance_height;
+            dx += met.advance_width;
+        }
+
+        let bounding_box = Rectangle::new(
+            position - Size::new(0, self.ascent().saturating_sub(1) as u32 + (dy as u32)),
+            Size::new(dx as u32, self.line_height()),
+        );
+
+        TextMetrics {
+            bounding_box,
+            next_position: position + Size::new(dx as u32, 0),
+        }
+    }
+
+    fn line_height(&self) -> u32 {
+        self.line_height as u32
+    }
+}
