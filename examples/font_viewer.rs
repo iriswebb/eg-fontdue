@@ -1,5 +1,5 @@
 use anyhow::Result;
-use eg_fontdue::FontdueTextStyle;
+use eg_femtofont::FemtoFontTextStyle;
 use embedded_graphics::{
     geometry::AnchorPoint,
     mono_font::{ascii::FONT_6X10, MonoTextStyle},
@@ -123,8 +123,8 @@ fn try_main() -> Result<()> {
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
     let fdfont =
-        fontdue::Font::from_bytes(data.as_ref(), fontdue::FontSettings::default()).unwrap();
-    let style = FontdueTextStyle::new(&fdfont, Rgb888::BLUE, size);
+        femtofont::Font::from_bytes(data.as_ref(), femtofont::FontSettings::default()).unwrap();
+    let style = FemtoFontTextStyle::new(&fdfont, Rgb888::BLUE, size);
 
     let hints_style = MonoTextStyle::new(&FONT_6X10, Rgb888::CSS_DIM_GRAY);
     let bottom_right = TextStyleBuilder::new()

@@ -1,24 +1,27 @@
-//! # eg-fontdue - A TTF/OTF renderer for `embedded_graphics`
+//! # eg-femtofont - A TTF/OTF renderer for `embedded_graphics`
 //!
-//! `eg-fontdue` implements `embedded_graphics`'s [`TextRenderer`](https://docs.rs/embedded-graphics/latest/embedded_graphics/text/renderer/trait.TextRenderer.html) and [`CharacterStyle`](https://docs.rs/embedded-graphics/latest/embedded_graphics/text/renderer/trait.CharacterStyle.html) traits over the [`fontdue`](https://github.com/mooman222/fontdue) crate. Allowing for the rendering of arbitrary TTF/OTF fonts at any size.
+//! `eg-femtofont` implements `embedded_graphics`'s [`TextRenderer`](https://docs.rs/embedded-graphics/latest/embedded_graphics/text/renderer/trait.TextRenderer.html) and
+//! [`CharacterStyle`](https://docs.rs/embedded-graphics/latest/embedded_graphics/text/renderer/trait.CharacterStyle.html) traits over the
+//! [`femtofont`](https://github.com/iriswebb/femtofont) crate. Allowing for the rendering of arbitrary TTF/OTF fonts at any size.
 //!
-//! Basic anti-aliasing is implemented, the anti-aliasing engine automatically chooses the inverse of the text color as the background color, if you do not want this, specify an anti-aliasing color with `FontdueTextStyle::with_aa_color`.
+//! Basic anti-aliasing is implemented, the anti-aliasing engine automatically chooses the
+//! inverse of the text color as the background color, if you do not want this, specify an
+//! anti-aliasing color with `FemtoFontTextStyle::with_aa_color`.
 //!
-//! Since glyphs have to be manually rasterized, rendering times may vary, `alloc` is also required
+//! Since glyphs have to be manually rasterized, rendering times may vary,
+//! `alloc` is also required
 //!
 //! ```rust
-//! use embedded_graphics::{pixelcolor::BinaryColor, text::Text};
+//! // load the font from raw data
+//! let font = include_bytes!("assets/path_to_font.ttf") as &[u8];
+//! let font = femtofont::Font::from_bytes_with_weight(font, 600.0, femtofont::FontSettings::default()).unwrap();
 //!
-//! // Load a font using `fontdue`
-//! let ttf_font_data = include_bytes!("assets/font.ttf");
-//! let font = fontdue::Font::from_bytes(ttf_font_data, fontdue::FontSettings::default())?;
+//! // Red text anti-aliased as if it were on a blue background
+//! let style = eg_femtofont::FemtoFontTextStyle::with_aa_color(&font, Rgb888::RED, Rgb888::BLUE, 20);
+//! let rendered_text = Text::new("FemtoFont", Point::new(100, 100), style);
 //!
-//! // Specify color and location
-//! let style = eg_fontdue::FontdueTextStyle::new(&font, BinaryColor::Off, 40);
-//! let rendered_text = Text::new("Hello!", Point::new(101, 100), style);
-//!
-//! // Render
-//! rendered_text.draw(display)?;
+//! // Draw
+//! rendered_text.draw(&mut display).unwrap();
 //! ```
 #![no_std]
 #![warn(missing_docs)]
@@ -42,7 +45,7 @@ use embedded_graphics::{
         Alignment, Baseline,
     },
 };
-use fontdue::layout::{Layout, TextStyle, WrapStyle};
+use femtofont::layout::{Layout, TextStyle, WrapStyle};
 
 /// Text vertical alignment
 #[derive(Debug, Clone, Copy, Default)]
@@ -85,9 +88,9 @@ fn inverse(col: Rgb888) -> Rgb888 {
 
 /// A text renderer for TTF and OTF fonts
 #[derive(Debug, Clone, Copy)]
-pub struct FontdueTextStyle<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> {
+pub struct FemtoFontTextStyle<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> {
     /// A SFNT font
-    pub font: &'a fontdue::Font,
+    pub font: &'a femtofont::Font<'a>,
     /// The color the text will be rendered in
     pub color: C,
     /// The color the font anti-aliases towards
@@ -110,19 +113,13 @@ pub struct FontdueTextStyle<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Int
     pub wrap_hard_breaks: bool,
 }
 
-impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> FontdueTextStyle<'a, C> {
+impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> FemtoFontTextStyle<'a, C> {
     fn ascent(&self) -> u16 {
-        self.font
-            .horizontal_line_metrics(self.size as f32)
-            .unwrap()
-            .ascent as u16
+        self.font.horizontal_line_metrics(self.size as f32).ascent as u16
     }
 
     fn descent(&self) -> u16 {
-        self.font
-            .horizontal_line_metrics(self.size as f32)
-            .unwrap()
-            .descent as u16
+        self.font.horizontal_line_metrics(self.size as f32).descent as u16
     }
 
     fn baseline_offset(&self, baseline: Baseline) -> i32 {
@@ -135,12 +132,12 @@ impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> FontdueTextS
     }
 }
 
-impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> FontdueTextStyle<'a, C>
+impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> FemtoFontTextStyle<'a, C>
 where
     Rgb888: From<C>,
 {
     /// Constructs a new text style
-    pub fn new(font: &'a fontdue::Font, color: C, size: u16) -> Self {
+    pub fn new(font: &'a femtofont::Font, color: C, size: u16) -> Self {
         Self {
             font,
             color,
@@ -157,7 +154,7 @@ where
     }
 
     /// Constructs a new text style with an antialiasing color
-    pub fn with_aa_color(font: &'a fontdue::Font, color: C, aa_color: C, size: u16) -> Self {
+    pub fn with_aa_color(font: &'a femtofont::Font, color: C, aa_color: C, size: u16) -> Self {
         Self {
             font,
             color,
@@ -215,8 +212,8 @@ where
 
     /// Generates a font layout from the text style
     pub fn generate_layout(&self, text: &str, position: Point) -> Layout {
-        let mut layout = Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
-        let settings = fontdue::layout::LayoutSettings {
+        let mut layout = Layout::new(femtofont::layout::CoordinateSystem::PositiveYDown);
+        let settings = femtofont::layout::LayoutSettings {
             x: position.x as f32,
             y: position.y as f32,
             line_height: self.line_height,
@@ -228,14 +225,14 @@ where
             },
             wrap_hard_breaks: self.wrap_hard_breaks,
             horizontal_align: match self.horiz_align {
-                Alignment::Center => fontdue::layout::HorizontalAlign::Center,
-                Alignment::Left => fontdue::layout::HorizontalAlign::Left,
-                Alignment::Right => fontdue::layout::HorizontalAlign::Right,
+                Alignment::Center => femtofont::layout::HorizontalAlign::Center,
+                Alignment::Left => femtofont::layout::HorizontalAlign::Left,
+                Alignment::Right => femtofont::layout::HorizontalAlign::Right,
             },
             vertical_align: match self.vert_align_not_center {
-                VerticalAlign::Middle => fontdue::layout::VerticalAlign::Middle,
-                VerticalAlign::Top => fontdue::layout::VerticalAlign::Top,
-                VerticalAlign::Bottom => fontdue::layout::VerticalAlign::Bottom,
+                VerticalAlign::Middle => femtofont::layout::VerticalAlign::Middle,
+                VerticalAlign::Top => femtofont::layout::VerticalAlign::Top,
+                VerticalAlign::Bottom => femtofont::layout::VerticalAlign::Bottom,
             },
         };
 
@@ -248,7 +245,7 @@ where
 }
 
 impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> CharacterStyle
-    for FontdueTextStyle<'a, C>
+    for FemtoFontTextStyle<'a, C>
 {
     type Color = C;
 
@@ -263,7 +260,7 @@ impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> CharacterSty
 }
 
 impl<'a, C: PixelColor + From<Gray8> + From<Rgb888> + Into<Rgb888>> TextRenderer
-    for FontdueTextStyle<'a, C>
+    for FemtoFontTextStyle<'a, C>
 where
     Rgb888: From<C>,
 {
